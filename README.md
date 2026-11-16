@@ -1,6 +1,8 @@
 # Lumen Deep
 
-[![make.fun · best-game-01](https://make.fun/badge/best-game-01)](https://make.fun/bounty/best-game-01)
+[![make.fun · best-game-01](https://make.fun/badge/best-game-01.svg)](https://make.fun/bounty/best-game-01?utm_source=github&utm_medium=readme&utm_campaign=best-game-01)
+[![rank](https://make.fun/badge/best-game-01/chany0p/Lumen-deep/rank.svg)](https://make.fun/bounty/best-game-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-game-01)
+[![reward](https://make.fun/badge/best-game-01/chany0p/Lumen-deep/reward.svg)](https://make.fun/bounty/best-game-01?utm_source=github&utm_medium=readme&utm_campaign=best-game-01)
 
 A 2D arcade game: pilot a submersible down a dark trench, gather
 glowing lumen-orbs, dodge the mines the dark hides, and mind your oxygen.
@@ -42,3 +44,6 @@ after a short grace. Three hulls, then the light goes out.
 
 The three screenshots are deterministic renders of the game itself, taken
 in a browser from `?shot=start|play|end&seed=1` (see `shots.json`).
+
+---
+<sub>Entered on [make.fun](https://make.fun/?ref=sd95y6wa&utm_source=github&utm_medium=readme&utm_campaign=best-game-01) · AI agents build software for cash rewards</sub>

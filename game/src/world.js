@@ -24,6 +24,10 @@ export class World {
     this.rocks = [];
     this.timers = { orb: 0, mine: 2, fish: 4, pocket: 5 };
     this.time = 0;
+    this.boss = null; // the Ancient Angler, while a boss level is live
+    this.sonar = 0; // seconds of mine-reveal left from the last ping
+    this.sonarMax = 0; // reveal length of the last ping (for the ring)
+    this.sonarCooldown = 0; // seconds until the next ping may fire
     this._seedAmbient();
     this._seedRocks();
   }
@@ -159,6 +163,56 @@ export class World {
     // Deeper water starts a little emptier, then fills back in.
     this.mines = this.mines.slice(0, 2);
     this.fish = this.fish.slice(0, 1);
+    // Levels 3, 6, 9 (and every third level in endless) are guarded by
+    // the Ancient Angler: the way down stays shut until it is beaten.
+    if (this.level % 3 === 0) this.spawnBoss();
+  }
+
+  bossAlive() {
+    return this.boss !== null && this.boss.hp > 0;
+  }
+
+  spawnBoss() {
+    this.boss = {
+      kind: 'boss',
+      x: CONFIG.width * 0.72,
+      y: 120,
+      r: CONFIG.boss.radius,
+      hp: CONFIG.boss.hp,
+      maxHp: CONFIG.boss.hp,
+      angle: Math.PI / 2,
+      mode: 'stalk',
+      timer: CONFIG.boss.attackInterval,
+      chargeX: 0,
+      chargeY: 0,
+      flash: 0,
+    };
+  }
+
+  // A sonar ping: mines light up while `sonar` runs down, then the
+  // cooldown runs down. Returns false while still cooling down.
+  fireSonar(cooldownSeconds, revealSeconds) {
+    if (this.sonarCooldown > 0) return false;
+    this.sonar = revealSeconds;
+    this.sonarMax = revealSeconds;
+    this.sonarCooldown = cooldownSeconds;
+    return true;
+  }
+
+  // A boss kill scatters orbs around the wreck.
+  dropOrbs(x, y, count) {
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * TAU;
+      this.orbs.push({
+        kind: 'orb',
+        x: clamp(x + Math.cos(a) * 46, 30, CONFIG.width - 30),
+        y: clamp(y + Math.sin(a) * 46, 60, CONFIG.height - 30),
+        r: 9,
+        phase: this.rng() * TAU,
+        drift: 0,
+        driftPhase: 0,
+      });
+    }
   }
 
   get darkness() {
@@ -169,9 +223,11 @@ export class World {
     );
   }
 
-  update(dt, sub) {
+  update(dt, sub, fx = {}) {
     this.time += dt;
     this.subPos = { x: sub.x, y: sub.y };
+    if (this.sonar > 0) this.sonar = Math.max(0, this.sonar - dt);
+    if (this.sonarCooldown > 0) this.sonarCooldown = Math.max(0, this.sonarCooldown - dt);
     const events = [];
     const spawn = CONFIG.spawn;
     const levelBoost = 1 + (this.level - 1) * 0.12;
@@ -198,12 +254,19 @@ export class World {
       this.timers.pocket = spawn.pocketInterval;
     }
 
-    // Orbs drift gently and pulse.
+    // Orbs drift gently and pulse. The Orb Magnet pulls nearby ones in.
     for (const o of this.orbs) {
       o.phase += dt * 2.2;
       o.driftPhase += dt;
       o.x += Math.sin(o.driftPhase) * o.drift * dt;
       o.y += Math.cos(o.driftPhase * 0.7) * 4 * dt;
+      if (fx.magnetRadius) {
+        const d = Math.hypot(sub.x - o.x, sub.y - o.y);
+        if (d > 1 && d < fx.magnetRadius) {
+          o.x += ((sub.x - o.x) / d) * 130 * dt;
+          o.y += ((sub.y - o.y) / d) * 130 * dt;
+        }
+      }
     }
     for (const m of this.mines) {
       m.blink += dt * 3;
@@ -228,6 +291,81 @@ export class World {
       f.y += Math.sin(f.angle) * f.speed * dt;
       f.x = clamp(f.x, 10, CONFIG.width - 10);
       f.y = clamp(f.y, 40, CONFIG.height - 10);
+    }
+
+    // The Ancient Angler: stalk, telegraph, charge, recover. The lamp
+    // burns it whenever the beast sits inside the cone.
+    if (this.boss) {
+      const b = this.boss;
+      b.timer -= dt;
+      if (b.flash > 0) b.flash -= dt;
+      if (b.mode === 'stalk') {
+        const want = Math.atan2(sub.y - b.y, sub.x - b.x);
+        let diff = want - b.angle;
+        while (diff > Math.PI) diff -= TAU;
+        while (diff < -Math.PI) diff += TAU;
+        b.angle += clamp(diff, -1.1 * dt, 1.1 * dt);
+        b.x += Math.cos(b.angle) * CONFIG.boss.stalkSpeed * dt;
+        b.y += Math.sin(b.angle) * CONFIG.boss.stalkSpeed * dt;
+        const bd = Math.hypot(sub.x - b.x, sub.y - b.y);
+        let ba = Math.atan2(b.y - sub.y, b.x - sub.x) - sub.lampAngle;
+        while (ba > Math.PI) ba -= TAU;
+        while (ba < -Math.PI) ba += TAU;
+        const inCone =
+          bd < (fx.lampRange || CONFIG.sub.lampRange) &&
+          Math.abs(ba) < (fx.lampHalfAngle || CONFIG.sub.lampAngle);
+        if (inCone) {
+          b.hp -= CONFIG.boss.burnDps * dt;
+          b.flash = 0.12;
+          if (this.rng() < 0.5) this.burst(b.x, b.y, '#ffb35c', 1, 60);
+        }
+        if (b.timer <= 0) {
+          b.mode = 'telegraph';
+          b.timer = CONFIG.boss.telegraphSeconds;
+          b.chargeX = sub.x;
+          b.chargeY = sub.y;
+        }
+      } else if (b.mode === 'telegraph') {
+        b.flash = 0.1;
+        if (b.timer <= 0) {
+          b.mode = 'charge';
+          b.timer = CONFIG.boss.chargeSeconds;
+          b.angle = Math.atan2(b.chargeY - b.y, b.chargeX - b.x);
+        }
+      } else if (b.mode === 'charge') {
+        b.x += Math.cos(b.angle) * CONFIG.boss.chargeSpeed * dt;
+        b.y += Math.sin(b.angle) * CONFIG.boss.chargeSpeed * dt;
+        if (b.timer <= 0) {
+          b.mode = 'recover';
+          b.timer = CONFIG.boss.recoverSeconds;
+        }
+      } else {
+        // recover: drift slowly, then stalk again.
+        b.x += Math.cos(b.angle) * 20 * dt;
+        b.y += Math.sin(b.angle) * 20 * dt;
+        if (b.timer <= 0) {
+          b.mode = 'stalk';
+          b.timer = CONFIG.boss.attackInterval;
+        }
+      }
+      b.x = clamp(b.x, 30, CONFIG.width - 30);
+      b.y = clamp(b.y, 60, CONFIG.height - 30);
+      // Swallowing a mine hurts: lure it into the dark's own traps.
+      for (let i = this.mines.length - 1; i >= 0; i--) {
+        const m = this.mines[i];
+        if (Math.hypot(m.x - b.x, m.y - b.y) < b.r + m.r) {
+          this.mines.splice(i, 1);
+          b.hp -= CONFIG.boss.mineDamage;
+          this.burst(m.x, m.y, '#ff5d5d', 18, 180);
+          this.floater(m.x, m.y - 16, `-${CONFIG.boss.mineDamage}`, '#ff8f6b');
+        }
+      }
+      if (b.hp <= 0) {
+        this.burst(b.x, b.y, '#ff8f6b', 40, 240);
+        this.burst(b.x, b.y, '#ffd76a', 24, 180);
+        this.boss = null;
+        events.push({ type: 'bossdown', x: b.x, y: b.y });
+      }
     }
 
     // Ambient snow and bubbles.
@@ -296,6 +434,13 @@ export class World {
           this.fish.splice(i, 1);
           events.push({ type: 'fish', x: f.x, y: f.y });
           break;
+        }
+      }
+      // The boss itself: touching it hurts, but it does not die from it.
+      if (this.boss) {
+        const b = this.boss;
+        if (Math.hypot(b.x - sub.x, b.y - sub.y) < b.r + rr - 4) {
+          events.push({ type: 'fish', x: b.x, y: b.y });
         }
       }
     }

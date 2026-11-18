@@ -16,6 +16,7 @@ export class Renderer {
     this.dark.width = CONFIG.width;
     this.dark.height = CONFIG.height;
     this.dctx = this.dark.getContext('2d');
+    this.upgradeRects = null; // card hit-boxes while the Dive Shop is open
   }
 
   draw(game) {
@@ -34,6 +35,22 @@ export class Renderer {
     g.addColorStop(1, pal.abyssDeep);
     ctx.fillStyle = g;
     ctx.fillRect(-12, -12, CONFIG.width + 24, CONFIG.height + 24);
+
+    // God rays: faint shafts of surface light slanting into the trench.
+    ctx.save();
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = '#bfe9ff';
+    for (let i = 0; i < 4; i++) {
+      const x0 = 120 + i * 230 + Math.sin(game.time * 0.1 + i) * 12;
+      ctx.beginPath();
+      ctx.moveTo(x0, -12);
+      ctx.lineTo(x0 + 70, -12);
+      ctx.lineTo(x0 + 190, CONFIG.height);
+      ctx.lineTo(x0 + 90, CONFIG.height);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
 
     // Marine snow and rising bubbles, far and faint.
     ctx.fillStyle = 'rgba(180, 220, 240, 0.35)';
@@ -60,7 +77,8 @@ export class Renderer {
       ctx.fill();
     }
 
-    // The darkness mask, with the lamp cut out of it.
+    // The darkness mask, with the lamp cut out of it. The cone's reach
+    // and width come from the game: upgrades widen the beam.
     const d = this.dctx;
     d.clearRect(0, 0, CONFIG.width, CONFIG.height);
     d.globalCompositeOperation = 'source-over';
@@ -68,16 +86,18 @@ export class Renderer {
     d.fillRect(0, 0, CONFIG.width, CONFIG.height);
     d.globalCompositeOperation = 'destination-out';
     const lampAngle = sub.lampAngle;
-    const lamp = ctx.createRadialGradient(sub.x, sub.y, 10, sub.x, sub.y, CONFIG.sub.lampRange);
+    const lampRange = game.lampRange();
+    const lampHalf = game.lampHalfAngle();
+    const lamp = ctx.createRadialGradient(sub.x, sub.y, 10, sub.x, sub.y, lampRange);
     // The cone itself.
     d.save();
     d.beginPath();
     d.moveTo(sub.x, sub.y);
-    d.arc(sub.x, sub.y, CONFIG.sub.lampRange, lampAngle - CONFIG.sub.lampAngle, lampAngle + CONFIG.sub.lampAngle);
+    d.arc(sub.x, sub.y, lampRange, lampAngle - lampHalf, lampAngle + lampHalf);
     d.closePath();
     d.clip();
     d.fillStyle = lamp;
-    d.fillRect(sub.x - CONFIG.sub.lampRange, sub.y - CONFIG.sub.lampRange, CONFIG.sub.lampRange * 2, CONFIG.sub.lampRange * 2);
+    d.fillRect(sub.x - lampRange, sub.y - lampRange, lampRange * 2, lampRange * 2);
     d.restore();
     // A soft pool of light right around the sub.
     const pool = d.createRadialGradient(sub.x, sub.y, 4, sub.x, sub.y, 110);
@@ -97,15 +117,15 @@ export class Renderer {
     const cone = ctx.createLinearGradient(
       sub.x,
       sub.y,
-      sub.x + Math.cos(lampAngle) * CONFIG.sub.lampRange,
-      sub.y + Math.sin(lampAngle) * CONFIG.sub.lampRange,
+      sub.x + Math.cos(lampAngle) * lampRange,
+      sub.y + Math.sin(lampAngle) * lampRange,
     );
     cone.addColorStop(0, 'rgba(255, 240, 190, 0.10)');
     cone.addColorStop(1, 'rgba(255, 240, 190, 0)');
     ctx.fillStyle = cone;
     ctx.beginPath();
     ctx.moveTo(sub.x, sub.y);
-    ctx.arc(sub.x, sub.y, CONFIG.sub.lampRange, lampAngle - CONFIG.sub.lampAngle, lampAngle + CONFIG.sub.lampAngle);
+    ctx.arc(sub.x, sub.y, lampRange, lampAngle - lampHalf, lampAngle + lampHalf);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -143,6 +163,30 @@ export class Renderer {
       ctx.arc(lx, ly, 12, 0, TAU);
       ctx.fill();
     }
+    // Glow-plants on the trench walls: fixed dots of bioluminescence.
+    for (const r of world.rocks) {
+      for (let k = 0; k < 3; k++) {
+        const px = r.x - r.w / 2 + (r.w * (k + 1)) / 4 + Math.sin(r.x + k * 7) * 8;
+        const py = CONFIG.height - r.h * (0.5 + 0.3 * Math.sin(r.x * 0.13 + k));
+        const halo = ctx.createRadialGradient(px, py, 1, px, py, 10);
+        halo.addColorStop(0, 'rgba(125, 252, 214, 0.35)');
+        halo.addColorStop(1, 'rgba(125, 252, 214, 0)');
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(px, py, 10, 0, TAU);
+        ctx.fill();
+      }
+    }
+    // Sonar ping: an expanding ring while the reveal lasts.
+    if (world.sonar > 0) {
+      const max = world.sonarMax || CONFIG.sonar.revealSeconds;
+      const progress = 1 - world.sonar / max;
+      ctx.strokeStyle = `rgba(159, 220, 255, ${0.7 * (1 - progress)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(sub.x, sub.y, 40 + progress * CONFIG.sonar.range, 0, TAU);
+      ctx.stroke();
+    }
     ctx.restore();
 
     // Orbs, pockets, mines and fish themselves.
@@ -175,6 +219,14 @@ export class Renderer {
     }
     for (const m of world.mines) {
       const blink = 0.5 + 0.5 * Math.sin(m.blink);
+      const revealed = world.sonar > 0; // a sonar ping lights every mine up
+      if (revealed) {
+        ctx.strokeStyle = 'rgba(255, 93, 93, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, m.r + 6, 0, TAU);
+        ctx.stroke();
+      }
       ctx.fillStyle = '#3a1518';
       ctx.beginPath();
       ctx.arc(m.x, m.y, m.r, 0, TAU);
@@ -194,7 +246,7 @@ export class Renderer {
         ctx.stroke();
       }
       // Its warning blink: the only thing that gives it away in the dark.
-      ctx.fillStyle = `rgba(255, 93, 93, ${0.25 + blink * 0.65})`;
+      ctx.fillStyle = `rgba(255, 93, 93, ${revealed ? 1 : 0.25 + blink * 0.65})`;
       ctx.beginPath();
       ctx.arc(m.x, m.y, 3.5, 0, TAU);
       ctx.fill();
@@ -238,6 +290,9 @@ export class Renderer {
       ctx.restore();
     }
 
+    // The boss, when a boss level is live: a huge anglerfish, drawn big.
+    if (world.boss) this._drawBoss(ctx, world.boss, game.time);
+
     // The submersible, always lit: it carries the lamp.
     this._drawSub(ctx, sub, game.time);
 
@@ -265,7 +320,10 @@ export class Renderer {
     if (game.state === 'title') this._drawTitle(ctx, game);
     else if (game.state === 'gameover') this._drawGameOver(ctx, game);
     else if (game.state === 'win') this._drawWin(ctx, game);
-    else {
+    else if (game.state === 'upgrade') {
+      this._drawHud(ctx, game);
+      this._drawUpgrade(ctx, game);
+    } else {
       this._drawHud(ctx, game);
       if (game.state === 'paused') this._drawPaused(ctx, game);
     }
@@ -311,6 +369,70 @@ export class Renderer {
     void pal;
   }
 
+  _drawBoss(ctx, b, time) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.angle);
+    const flash = b.flash > 0;
+    // Body: a huge anglerfish, deep crimson in the dark.
+    ctx.fillStyle = flash ? '#7a2436' : '#3d1630';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, b.r + 14, b.r * 0.66, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = '#ff5d7a';
+    ctx.beginPath();
+    ctx.ellipse(0, b.r * 0.3, b.r * 0.7, b.r * 0.3, 0, 0, TAU);
+    ctx.fill();
+    // Tail fin.
+    ctx.fillStyle = '#5c1f38';
+    ctx.beginPath();
+    ctx.moveTo(-b.r - 8, 0);
+    ctx.lineTo(-b.r - 30, -16);
+    ctx.lineTo(-b.r - 30, 16);
+    ctx.closePath();
+    ctx.fill();
+    // Teeth.
+    ctx.strokeStyle = '#ffe9f2';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const tx = 14 + i * 7;
+      ctx.moveTo(tx, 10);
+      ctx.lineTo(tx + 3, 20);
+    }
+    ctx.stroke();
+    // Eye.
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(24, -10, 5, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = '#ff2e4d';
+    ctx.beginPath();
+    ctx.arc(24, -10, 2.5, 0, TAU);
+    ctx.fill();
+    // Lure stalk with a big glow-bulb.
+    ctx.strokeStyle = '#c9a7ff';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(18, -18);
+    ctx.quadraticCurveTo(36, -34, b.r + 18, -22);
+    ctx.stroke();
+    ctx.fillStyle = '#f2e7ff';
+    ctx.beginPath();
+    ctx.arc(b.r + 18, -22, 7, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+    // Telegraph: a pulsing red ring while it winds up a charge.
+    if (b.mode === 'telegraph') {
+      const pulse = 0.5 + 0.5 * Math.sin(time * 18);
+      ctx.strokeStyle = `rgba(255, 46, 77, ${0.4 + pulse * 0.6})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r + 14 + pulse * 8, 0, TAU);
+      ctx.stroke();
+    }
+  }
+
   _drawHud(ctx, game) {
     const pal = CONFIG.palette;
     const { width } = CONFIG;
@@ -333,13 +455,27 @@ export class Renderer {
     ctx.fillText(`DEPTH ${game.world.depthMetres + game.depthInLevel} m  ·  LEVEL ${game.world.level}`, width / 2, 28);
     // Hull hearts, top right.
     ctx.textAlign = 'right';
-    for (let i = 0; i < CONFIG.sub.hull; i++) {
+    for (let i = 0; i < game.maxHull(); i++) {
       ctx.fillStyle = i < game.hull ? pal.hull : 'rgba(255,143,107,0.25)';
       ctx.font = '20px system-ui, sans-serif';
       ctx.fillText('♥', width - 16 - i * 26, 30);
     }
+    // Boss health bar, top centre, while a boss level is live.
+    if (game.world.boss) {
+      const b = game.world.boss;
+      const bw = 300;
+      const bx = width / 2 - bw / 2;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ff8fa8';
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.fillText('ANCIENT ANGLER', width / 2, 60);
+      ctx.fillStyle = 'rgba(2, 12, 22, 0.6)';
+      ctx.fillRect(bx, 66, bw, 10);
+      ctx.fillStyle = '#ff2e4d';
+      ctx.fillRect(bx, 66, bw * Math.max(0, b.hp / b.maxHp), 10);
+    }
     // Oxygen bar, bottom left.
-    const ox = clamp(game.oxygen / CONFIG.oxygen.max, 0, 1);
+    const ox = clamp(game.oxygen / game.oxygenMax(), 0, 1);
     ctx.textAlign = 'left';
     ctx.fillStyle = pal.textDim;
     ctx.font = '600 13px system-ui, sans-serif';
@@ -348,24 +484,46 @@ export class Renderer {
     ctx.fillRect(16, CONFIG.height - 28, 170, 12);
     ctx.fillStyle = ox > 0.3 ? '#7fd4ff' : '#ff7d6b';
     ctx.fillRect(16, CONFIG.height - 28, 170 * ox, 12);
-    // Descent progress, bottom right.
+    // Descent progress, bottom right — or the boss gate, on boss levels.
     ctx.textAlign = 'right';
     ctx.fillStyle = pal.textDim;
     ctx.font = '600 13px system-ui, sans-serif';
     ctx.fillText(
-      `ORBS TO DESCEND  ${game.world.orbsBanked}/${CONFIG.depth.orbsToDescend}`,
+      game.world.bossAlive()
+        ? 'DEFEAT THE ANCIENT ANGLER TO DESCEND'
+        : `ORBS TO DESCEND  ${game.world.orbsBanked}/${CONFIG.depth.orbsToDescend}`,
       width - 16,
       CONFIG.height - 34,
     );
     ctx.fillStyle = 'rgba(2, 12, 22, 0.6)';
     ctx.fillRect(width - 186, CONFIG.height - 28, 170, 12);
-    ctx.fillStyle = pal.orb;
-    ctx.fillRect(
-      width - 186,
-      CONFIG.height - 28,
-      170 * clamp(game.world.orbsBanked / CONFIG.depth.orbsToDescend, 0, 1),
-      12,
-    );
+    if (game.world.bossAlive()) {
+      const b = game.world.boss;
+      ctx.fillStyle = '#ff2e4d';
+      ctx.fillRect(width - 186, CONFIG.height - 28, 170 * Math.max(0, b.hp / b.maxHp), 12);
+    } else {
+      ctx.fillStyle = pal.orb;
+      ctx.fillRect(
+        width - 186,
+        CONFIG.height - 28,
+        170 * clamp(game.world.orbsBanked / CONFIG.depth.orbsToDescend, 0, 1),
+        12,
+      );
+    }
+    // Sonar pill, bottom centre.
+    const cd = game.world.sonarCooldown;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = cd <= 0 ? '#9fdcff' : 'rgba(143, 184, 204, 0.75)';
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillText(cd <= 0 ? 'SONAR READY — SPACE' : `SONAR ${Math.ceil(cd)}s`, width / 2, CONFIG.height - 34);
+    // Upgrade stars, top right under the hearts: one per upgrade taken.
+    const taken = Object.values(game.upgrades).reduce((a, n) => a + n, 0);
+    if (taken > 0) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = pal.gold;
+      ctx.font = '13px system-ui, sans-serif';
+      ctx.fillText('✦'.repeat(taken), width - 16, 58);
+    }
     // Mute hint.
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(143, 184, 204, 0.75)';
@@ -376,7 +534,7 @@ export class Renderer {
   _panel(ctx, title, lines, accent) {
     const pal = CONFIG.palette;
     const { width, height } = CONFIG;
-    ctx.fillStyle = 'rgba(2, 10, 20, 0.72)';
+    ctx.fillStyle = 'rgba(2, 10, 20, 0.55)';
     ctx.fillRect(0, 0, width, height);
     ctx.textAlign = 'center';
     ctx.fillStyle = accent;
@@ -401,19 +559,22 @@ export class Renderer {
         'dodge the mines the dark hides, and mind your oxygen.',
         '',
         'Move — WASD or arrow keys      Aim the lamp — mouse',
-        'Pause — P      Mute — M',
+        'Sonar — SPACE      Pause — P      Mute — M',
         '',
-        'Bank 12 orbs to descend. Reach the trench floor at 1000 m to win.',
+        'Bank 12 orbs to descend — bosses guard levels 3, 6 and 9.',
+        'After every level, pick 1 of 3 upgrades. Reach 1000 m to win.',
       ],
       CONFIG.palette.orb,
     );
     ctx.fillStyle = CONFIG.palette.gold;
     ctx.font = 'bold 19px system-ui, sans-serif';
     ctx.fillText('Press ENTER or click to dive', CONFIG.width / 2, y + 18);
+    ctx.font = 'bold 16px system-ui, sans-serif';
+    ctx.fillText('10 LEVELS  ·  3 BOSSES  ·  6 UPGRADES  ·  SONAR  ·  ENDLESS', CONFIG.width / 2, y + 48);
     if (game.best > 0) {
       ctx.fillStyle = CONFIG.palette.textDim;
       ctx.font = '15px system-ui, sans-serif';
-      ctx.fillText(`Best dive: ${game.best} points`, CONFIG.width / 2, y + 48);
+      ctx.fillText(`Best dive: ${game.best} points`, CONFIG.width / 2, y + 78);
     }
   }
 
@@ -430,13 +591,78 @@ export class Renderer {
     void game;
   }
 
+  // The Dive Shop: three upgrade cards after every level. The renderer
+  // remembers the card boxes so a click can pick one, too.
+  _drawUpgrade(ctx, game) {
+    const pal = CONFIG.palette;
+    const { width } = CONFIG;
+    ctx.fillStyle = 'rgba(2, 10, 20, 0.66)';
+    ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = pal.gold;
+    ctx.font = 'bold 34px system-ui, sans-serif';
+    ctx.fillText(`LEVEL ${game.world.level} CLEAR — DIVE SHOP`, width / 2, 108);
+    ctx.fillStyle = pal.text;
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.fillText('Pick one upgrade to take deeper. Press 1, 2 or 3 — or click a card.', width / 2, 140);
+    const cards = game.draft || [];
+    const cw = 250;
+    const ch = 170;
+    const gap = 24;
+    const total = cards.length * cw + (cards.length - 1) * gap;
+    let x = (width - total) / 2;
+    const y = 180;
+    this.upgradeRects = [];
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      ctx.fillStyle = 'rgba(10, 46, 68, 0.95)';
+      ctx.strokeStyle = pal.gold;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, cw, ch, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = pal.gold;
+      ctx.font = 'bold 15px system-ui, sans-serif';
+      ctx.fillText(`[${i + 1}]`, x + cw / 2, y + 30);
+      ctx.fillStyle = pal.orb;
+      ctx.font = 'bold 34px system-ui, sans-serif';
+      ctx.fillText(c.icon, x + cw / 2, y + 74);
+      ctx.fillStyle = pal.text;
+      ctx.font = 'bold 17px system-ui, sans-serif';
+      ctx.fillText(c.name, x + cw / 2, y + 106);
+      ctx.fillStyle = pal.textDim;
+      ctx.font = '14px system-ui, sans-serif';
+      const words = c.desc.split(' ');
+      let line = '';
+      let ly = y + 132;
+      for (const w of words) {
+        if ((line + ' ' + w).trim().length > 30) {
+          ctx.fillText(line.trim(), x + cw / 2, ly);
+          line = w;
+          ly += 18;
+        } else {
+          line = (line + ' ' + w).trim();
+        }
+      }
+      if (line) ctx.fillText(line, x + cw / 2, ly);
+      this.upgradeRects.push({ x, y, w: cw, h: ch });
+      x += cw + gap;
+    }
+    ctx.fillStyle = pal.textDim;
+    ctx.font = '15px system-ui, sans-serif';
+    ctx.fillText(`Depth ${game.world.depthMetres} m  ·  Score ${game.score}`, width / 2, y + ch + 40);
+  }
+
   _drawGameOver(ctx, game) {
+    const taken = Object.values(game.upgrades).reduce((a, n) => a + n, 0);
     const y = this._panel(
       ctx,
       'THE LIGHT WENT OUT',
       [
         `Your sub went dark at ${game.world.depthMetres + game.depthInLevel} m.`,
         `Final score: ${game.score} points  ·  Best: ${game.best}`,
+        `Orbs gathered: ${game.orbsCollected}  ·  Upgrades taken: ${taken}`,
       ],
       CONFIG.palette.mine,
     );
@@ -452,11 +678,14 @@ export class Renderer {
       [
         '1000 metres down — you found the heart of the trench.',
         `Final score: ${game.score} points  ·  Best: ${game.best}`,
+        `Orbs gathered: ${game.orbsCollected}  ·  Upgrades taken: ${Object.values(game.upgrades).reduce((a, n) => a + n, 0)}`,
       ],
       CONFIG.palette.gold,
     );
     ctx.fillStyle = CONFIG.palette.orb;
     ctx.font = 'bold 19px system-ui, sans-serif';
     ctx.fillText('Press R or ENTER to dive again', CONFIG.width / 2, y + 18);
+    ctx.fillStyle = CONFIG.palette.gold;
+    ctx.fillText('Press E to keep diving — endless mode', CONFIG.width / 2, y + 48);
   }
 }

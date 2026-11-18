@@ -3,7 +3,7 @@
 // scoring, descending, and the deterministic ?shot= presets the
 // screenshots are taken from. The world owns the entities; this file owns
 // the rules.
-import { CONFIG } from './config.js';
+import { CONFIG, UPGRADES } from './config.js';
 import { Input } from './input.js';
 import { Renderer } from './render.js';
 import { Sfx } from './audio.js';
@@ -31,6 +31,10 @@ export class Game {
     this.oxygen = CONFIG.oxygen.max;
     this.oxygenGrace = 0;
     this.shake = 0;
+    this.upgrades = { lamp: 0, speed: 0, hull: 0, tank: 0, magnet: 0, sonar: 0 };
+    this.draft = null; // the three upgrade cards on offer, while choosing
+    this.endless = false; // after the win, the dive can keep going down
+    this.orbsCollected = 0;
     this.best = this._loadBest();
     this.sub = {
       x: CONFIG.width / 2,
@@ -47,12 +51,47 @@ export class Game {
       this.sfx.ensure();
       if (this.state === 'title') this.start();
       else if (this.state === 'gameover' || this.state === 'win') this.restart();
+      else if (this.state === 'upgrade') this._clickDraft();
     };
     if (this.shot) this._applyShot();
   }
 
   get depthInLevel() {
     return Math.floor((this.world.orbsBanked / CONFIG.depth.orbsToDescend) * CONFIG.depth.metresPerLevel);
+  }
+
+  // Upgrade-derived numbers: the draft's picks change these, so the
+  // world and the renderer always read them from here, never from CONFIG.
+  lampRange() {
+    return CONFIG.sub.lampRange * (1 + 0.25 * this.upgrades.lamp);
+  }
+
+  lampHalfAngle() {
+    return CONFIG.sub.lampAngle * (1 + 0.15 * this.upgrades.lamp);
+  }
+
+  maxSpeed() {
+    return CONFIG.sub.maxSpeed * (1 + 0.18 * this.upgrades.speed);
+  }
+
+  oxygenMax() {
+    return CONFIG.oxygen.max + 40 * this.upgrades.tank;
+  }
+
+  maxHull() {
+    return CONFIG.sub.hull + Math.min(this.upgrades.hull, 2);
+  }
+
+  magnetRadius() {
+    return this.upgrades.magnet > 0 ? 110 + 30 * (this.upgrades.magnet - 1) : 0;
+  }
+
+  sonarCooldownMax() {
+    return CONFIG.sonar.cooldownSeconds * (this.upgrades.sonar > 0 ? 0.5 : 1);
+  }
+
+  sonarRevealSeconds() {
+    return CONFIG.sonar.revealSeconds + (this.upgrades.sonar > 0 ? 2 : 0);
   }
 
   _loadBest() {
@@ -78,7 +117,7 @@ export class Game {
   _applyShot() {
     if (this.shot === 'start') {
       this.state = 'title';
-      this._prewarm(6);
+      this._prewarm(12);
     } else if (this.shot === 'play') {
       this.state = 'playing';
       this.score = 240;
@@ -93,7 +132,31 @@ export class Game {
       this.sub.y = CONFIG.height * 0.55;
       this.sub.lampAngle = -0.5;
       this.input.mouse = { x: CONFIG.width * 0.72, y: CONFIG.height * 0.3, inside: true, moved: true };
+      this.sub.invulnerable = 999; // the shot holds still; nothing may hit it
       this._prewarm(14);
+      // Level 3 is a boss level: the Ancient Angler guards the way down.
+      this.world.spawnBoss();
+      this.world.boss.x = CONFIG.width * 0.74;
+      this.world.boss.y = CONFIG.height * 0.7;
+    } else if (this.shot === 'boss') {
+      this.state = 'playing';
+      this.score = 520;
+      this.combo = 4;
+      this.comboTimer = 2.5;
+      this.hull = 3;
+      this.oxygen = 80;
+      this.world.level = 3;
+      this.world.depthMetres = 200;
+      this.world.orbsBanked = 12;
+      this.sub.x = CONFIG.width * 0.4;
+      this.sub.y = CONFIG.height * 0.6;
+      this.sub.lampAngle = 0.4;
+      this.input.mouse = { x: CONFIG.width * 0.8, y: CONFIG.height * 0.75, inside: true, moved: true };
+      this.sub.invulnerable = 999; // the shot holds still; nothing may hit it
+      this._prewarm(6);
+      this.world.spawnBoss();
+      this.world.boss.x = CONFIG.width * 0.68;
+      this.world.boss.y = CONFIG.height * 0.34;
     } else if (this.shot === 'end') {
       this.state = 'gameover';
       this.score = 480;
@@ -103,6 +166,7 @@ export class Game {
       this.world.level = 4;
       this.world.depthMetres = 300;
       this.world.orbsBanked = 5;
+      this.orbsCollected = 24;
       this._prewarm(8);
     }
   }
@@ -140,6 +204,10 @@ export class Game {
     this.oxygen = CONFIG.oxygen.max;
     this.oxygenGrace = 0;
     this.shake = 0;
+    this.upgrades = { lamp: 0, speed: 0, hull: 0, tank: 0, magnet: 0, sonar: 0 };
+    this.draft = null;
+    this.endless = false;
+    this.orbsCollected = 0;
     this.sub.x = CONFIG.width / 2;
     this.sub.y = CONFIG.height / 2;
     this.sub.vx = 0;
@@ -191,8 +259,19 @@ export class Game {
         this.state = 'playing';
         this.sfx.click();
       }
+    } else if (this.state === 'upgrade') {
+      // The world holds still while the diver chooses an upgrade.
+      if (this.input.hit('1')) this._applyDraft(0);
+      else if (this.input.hit('2')) this._applyDraft(1);
+      else if (this.input.hit('3')) this._applyDraft(2);
     } else if (this.state === 'gameover' || this.state === 'win') {
       if (this.input.hit('r', 'R', 'Enter', ' ')) this.restart();
+      else if (this.state === 'win' && this.input.hit('e', 'E')) {
+        // The floor is reached — but the trench goes deeper forever.
+        this.endless = true;
+        this.state = 'playing';
+        this.sfx.level();
+      }
       this.world.update(dt, { ...this.sub, invulnerable: 999 });
     }
 
@@ -212,9 +291,10 @@ export class Game {
     sub.vx *= drag;
     sub.vy *= drag;
     const speed = Math.hypot(sub.vx, sub.vy);
-    if (speed > cfg.maxSpeed) {
-      sub.vx = (sub.vx / speed) * cfg.maxSpeed;
-      sub.vy = (sub.vy / speed) * cfg.maxSpeed;
+    const topSpeed = this.maxSpeed();
+    if (speed > topSpeed) {
+      sub.vx = (sub.vx / speed) * topSpeed;
+      sub.vy = (sub.vy / speed) * topSpeed;
     }
     sub.x = clamp(sub.x + sub.vx * dt, 20, CONFIG.width - 20);
     sub.y = clamp(sub.y + sub.vy * dt, 52, CONFIG.height - 20);
@@ -233,6 +313,14 @@ export class Game {
       sub.lampAngle = sub.facing;
     }
     if (sub.invulnerable > 0) sub.invulnerable -= dt;
+
+    // Sonar pulse: SPACE pings the dark and lights up every mine.
+    if (this.input.hit(' ')) {
+      if (this.world.fireSonar(this.sonarCooldownMax(), this.sonarRevealSeconds())) {
+        this.sfx.blip({ from: 980, to: 320, dur: 0.5, type: 'sine', gain: 0.55 });
+        this.world.floater(sub.x, sub.y - 30, 'SONAR', '#9fdcff');
+      }
+    }
 
     // Oxygen always drains; an empty tank gets a short grace, then a hull.
     this.oxygen = Math.max(0, this.oxygen - CONFIG.oxygen.drainPerSecond * dt);
@@ -254,23 +342,33 @@ export class Game {
     }
 
     // The world moves; the events come back here.
-    for (const e of this.world.update(dt, sub)) {
+    const fx = {
+      magnetRadius: this.magnetRadius(),
+      lampRange: this.lampRange(),
+      lampHalfAngle: this.lampHalfAngle(),
+    };
+    for (const e of this.world.update(dt, sub, fx)) {
       if (e.type === 'orb') this._collectOrb(e);
       else if (e.type === 'pocket') this._collectPocket(e);
+      else if (e.type === 'bossdown') this._bossDown(e);
       else if (e.type === 'mine' || e.type === 'fish') this._damage(e.x, e.y, 'HULL HIT');
     }
 
-    // Descend when enough orbs are banked; the trench floor is the win.
-    if (this.world.orbsBanked >= CONFIG.depth.orbsToDescend) {
+    // Descend when enough orbs are banked — unless the level's boss
+    // still guards the way down. Clearing a level opens the Dive Shop
+    // draft; the trench floor is the win, and after it the dive goes endless.
+    if (this.world.orbsBanked >= CONFIG.depth.orbsToDescend && !this.world.bossAlive()) {
       this.world.descend();
       this.score += CONFIG.depth.metresPerLevel * CONFIG.score.depthBonusPerMetre;
       this.sfx.level();
       this.world.floater(sub.x, sub.y - 34, `LEVEL ${this.world.level} — ${this.world.depthMetres} m`, '#ffd76a');
-      if (this.world.level > CONFIG.depth.maxLevel) {
+      if (this.world.level > CONFIG.depth.maxLevel && !this.endless) {
         this.score += CONFIG.score.winBonus;
         this._saveBest();
         this.sfx.win();
         this.state = 'win';
+      } else {
+        this._openDraft();
       }
     }
   }
@@ -280,6 +378,7 @@ export class Game {
     this.comboTimer = CONFIG.score.comboWindowSeconds;
     const gained = CONFIG.score.orbBase * this.combo;
     this.score += gained;
+    this.orbsCollected += 1;
     this.world.orbsBanked += 1;
     this.world.burst(e.x, e.y, '#7dfcd6', CONFIG.particles.pickupBurst);
     this.world.floater(e.x, e.y - 14, `+${gained}`, '#7dfcd6');
@@ -291,6 +390,57 @@ export class Game {
     this.world.burst(e.x, e.y, '#9fdcff', 10, 80);
     this.world.floater(e.x, e.y - 14, 'OXYGEN +', '#9fdcff');
     this.sfx.refill();
+  }
+
+  // The Dive Shop: three upgrades on offer, pick one. Hull caps at +2.
+  _openDraft() {
+    const pool = UPGRADES.filter((u) => u.id !== 'hull' || this.upgrades.hull < 2);
+    const shuffled = [...pool];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    this.draft = shuffled.slice(0, 3);
+    this.state = 'upgrade';
+    this.sfx.level();
+  }
+
+  _applyDraft(index) {
+    const pick = this.draft && this.draft[index];
+    if (!pick) return;
+    if (pick.id === 'hull') {
+      this.upgrades.hull += 1;
+      this.hull = Math.min(this.maxHull(), this.hull + 1);
+    } else if (pick.id === 'tank') {
+      this.upgrades.tank += 1;
+      this.oxygen = this.oxygenMax();
+    } else {
+      this.upgrades[pick.id] += 1;
+    }
+    this.world.floater(this.sub.x, this.sub.y - 34, pick.name.toUpperCase(), '#ffd76a');
+    this.draft = null;
+    this.state = 'playing';
+    this.sfx.click();
+  }
+
+  _clickDraft() {
+    const rects = this.renderer.upgradeRects;
+    if (!rects) return;
+    const { x, y } = this.input.mouse;
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+        this._applyDraft(i);
+        return;
+      }
+    }
+  }
+
+  _bossDown(e) {
+    this.score += CONFIG.boss.scoreReward;
+    this.world.dropOrbs(e.x, e.y, 6);
+    this.world.floater(e.x, e.y - 30, `ANCIENT ANGLER DOWN +${CONFIG.boss.scoreReward}`, '#ffd76a');
+    this.sfx.level();
   }
 
   _damage(x, y, label) {
